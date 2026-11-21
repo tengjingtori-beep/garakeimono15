@@ -24,6 +24,10 @@ jobs:
           ls -la
           test -f Makefile
           test -f GarakeiMono15.plist
+          # Every plist must be 644 and every bundle folder 755:
+          # SpringBoard / Settings run as mobile and cannot read a
+          # 640 plist or enter a 750 folder (proven by ISLAND X and
+          # VoiceChat15 on this device).
           find . -name "*.plist" -not -path "./.git/*" -exec chmod 644 {} +
           chmod 755 prefs prefs/Resources
           find . -name "*.plist" -not -path "./.git/*" -exec ls -l {} +
@@ -64,8 +68,8 @@ jobs:
             echo "=== Control metadata (dpkg-deb -f) ==="
             dpkg-deb -f "$DEB"
             echo
-            echo "=== Version check (must be 0.1.0) ==="
-            dpkg-deb -f "$DEB" Version | grep -qx "0.1.0" && echo "Version OK: 0.1.0" || { echo "Version NG"; exit 1; }
+            echo "=== Version check (must be 0.1.1) ==="
+            dpkg-deb -f "$DEB" Version | grep -qx "0.1.1" && echo "Version OK: 0.1.1" || { echo "Version NG"; exit 1; }
             dpkg-deb -f "$DEB" Package | grep -qx "com.tori.garakeimono15" && echo "Package ID OK" || { echo "Package ID NG"; exit 1; }
             echo
             echo "=== Contents (dpkg-deb -c) ==="
@@ -122,21 +126,21 @@ jobs:
             file "$PREFS_BIN"
             file "$PREFS_BIN" | grep -q "arm64" && echo "Prefs arch OK: arm64" || { echo "Prefs arch NG"; exit 1; }
           } 2>&1 | tee inspection_report.txt
-          cp "$DEB" GarakeiMono15_Dopamine_Rootless.deb
+          cp "$DEB" GarakeiMono15_0.1.1_Dopamine_Rootless.deb
 
       - name: Prepare source ZIP
         run: |
           rm -rf source_zip && mkdir -p source_zip/GarakeiMono15
           cp -R Makefile control Tweak.x GMManager.h GMManager.m GarakeiMono15.plist README_JP.md prefs .github source_zip/GarakeiMono15/
           (cd source_zip && zip -r ../GarakeiMono15_Source.zip GarakeiMono15)
-          ls -lh GarakeiMono15_Source.zip GarakeiMono15_Dopamine_Rootless.deb build.log inspection_report.txt
+          ls -lh GarakeiMono15_Source.zip GarakeiMono15_0.1.1_Dopamine_Rootless.deb build.log inspection_report.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GARAKEIMONO15-0.1.0-rootless
+          name: GARAKEIMONO15-0.1.1-rootless
           path: |
-            GarakeiMono15_Dopamine_Rootless.deb
+            GarakeiMono15_0.1.1_Dopamine_Rootless.deb
             GarakeiMono15_Source.zip
             build.log
             inspection_report.txt
