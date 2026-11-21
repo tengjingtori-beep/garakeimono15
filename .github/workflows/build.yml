@@ -1,0 +1,153 @@
+name: Build GarakeiMono15
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack project zip if needed
+        run: |
+          if [ ! -f Makefile ]; then
+            for z in *.zip; do unzip -o "$z"; done
+          fi
+          if [ -d GarakeiMono15 ] && [ -f GarakeiMono15/Makefile ]; then
+            cp -R GarakeiMono15/. .
+          fi
+          ls -la
+          test -f Makefile
+          test -f GarakeiMono15.plist
+          find . -name "*.plist" -not -path "./.git/*" -exec chmod 644 {} +
+          chmod 755 prefs prefs/Resources
+          find . -name "*.plist" -not -path "./.git/*" -exec ls -l {} +
+
+      - name: Install build tools (ldid, dpkg)
+        run: |
+          brew install ldid dpkg || brew install ldid dpkg
+          which ldid
+          which dpkg-deb || true
+
+      - name: Install Theos
+        run: |
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          rm -rf "$THEOS/sdks"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks"
+          git -C "$THEOS/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          ls "$THEOS/sdks"
+          xcodebuild -version
+
+      - name: Build package (rootless, arm64)
+        run: |
+          set -o pipefail
+          make clean
+          make package FINALPACKAGE=1 2>&1 | tee build.log
+          ls -lh packages/
+
+      - name: Inspect Debian package
+        run: |
+          set -e
+          DEB="$(ls packages/*.deb | head -n 1)"
+          echo "DEB=$DEB"
+          {
+            echo "=== Package file ==="
+            echo "$DEB"
+            echo
+            echo "=== Control metadata (dpkg-deb -f) ==="
+            dpkg-deb -f "$DEB"
+            echo
+            echo "=== Version check (must be 0.1.0) ==="
+            dpkg-deb -f "$DEB" Version | grep -qx "0.1.0" && echo "Version OK: 0.1.0" || { echo "Version NG"; exit 1; }
+            dpkg-deb -f "$DEB" Package | grep -qx "com.tori.garakeimono15" && echo "Package ID OK" || { echo "Package ID NG"; exit 1; }
+            echo
+            echo "=== Contents (dpkg-deb -c) ==="
+            dpkg-deb -c "$DEB"
+            echo
+            echo "=== Required files check ==="
+            dpkg-deb -c "$DEB" | grep -E "GarakeiMono15\.dylib" || { echo "MISSING: GarakeiMono15.dylib"; exit 1; }
+            dpkg-deb -c "$DEB" | grep -E "GarakeiMono15\.plist" || { echo "MISSING: GarakeiMono15.plist"; exit 1; }
+            dpkg-deb -c "$DEB" | grep -E "GarakeiMono15Prefs" || { echo "MISSING: GarakeiMono15Prefs bundle"; exit 1; }
+            echo "dylib, plist and prefs bundle are present."
+            echo
+            echo "=== Dylib permission check (must be 755) ==="
+            dpkg-deb -c "$DEB" | grep -E "GarakeiMono15\.dylib" | grep -q "^-rwxr-xr-x" \
+              && echo "Dylib permission OK: 755" || { echo "Dylib permission NG: not 755"; exit 1; }
+            echo
+            echo "=== All plists permission check (every plist must be 644) ==="
+            if dpkg-deb -c "$DEB" | grep -E "\.plist" | grep -v "^-rw-r--r--"; then
+              echo "Plist permission NG: a plist above is not 644"; exit 1
+            fi
+            echo "All plists OK: 644"
+            echo
+            echo "=== Prefs bundle folder permission check (must be 755) ==="
+            dpkg-deb -c "$DEB" | grep -E "GarakeiMono15Prefs\.bundle/$" | grep -q "^drwxr-xr-x" \
+              && echo "Bundle folder OK: 755" || { echo "Bundle folder NG: not 755"; exit 1; }
+            echo
+            echo "=== Extract and inspect ==="
+            rm -rf pkg_inspect && mkdir -p pkg_inspect
+            dpkg-deb -x "$DEB" pkg_inspect
+            find pkg_inspect -type f | sort
+            echo
+            echo "=== Rootless layout check ==="
+            find pkg_inspect -path "*var/jb*" | head -n 5
+            find pkg_inspect -name 'GarakeiMono15.dylib' | grep -q "var/jb" && echo "Rootless layout OK" || { echo "Rootless layout NG"; exit 1; }
+            echo
+            echo "=== Filter plist contents ==="
+            PLIST_PATH="$(find pkg_inspect -name 'GarakeiMono15.plist' | head -n 1)"
+            echo "Plist path in package: $PLIST_PATH"
+            cat "$PLIST_PATH"
+            grep -q "com.apple.springboard" "$PLIST_PATH" && echo "Filter target OK: com.apple.springboard (SpringBoard only)"
+            echo
+            echo "=== Dylib architecture ==="
+            DYLIB_PATH="$(find pkg_inspect -name 'GarakeiMono15.dylib' | head -n 1)"
+            echo "Dylib path in package: $DYLIB_PATH"
+            file "$DYLIB_PATH"
+            (lipo -info "$DYLIB_PATH" || true)
+            file "$DYLIB_PATH" | grep -q "arm64" && echo "Dylib arch OK: arm64" || { echo "Dylib arch NG"; exit 1; }
+            echo
+            echo "=== Dylib linked libraries (otool -L) ==="
+            (otool -L "$DYLIB_PATH" || true)
+            echo
+            echo "=== Prefs bundle architecture ==="
+            PREFS_BIN="$(find pkg_inspect -path '*GarakeiMono15Prefs*' -type f ! -name '*.plist' | head -n 1)"
+            echo "Prefs binary: $PREFS_BIN"
+            file "$PREFS_BIN"
+            file "$PREFS_BIN" | grep -q "arm64" && echo "Prefs arch OK: arm64" || { echo "Prefs arch NG"; exit 1; }
+          } 2>&1 | tee inspection_report.txt
+          cp "$DEB" GarakeiMono15_Dopamine_Rootless.deb
+
+      - name: Prepare source ZIP
+        run: |
+          rm -rf source_zip && mkdir -p source_zip/GarakeiMono15
+          cp -R Makefile control Tweak.x GMManager.h GMManager.m GarakeiMono15.plist README_JP.md prefs .github source_zip/GarakeiMono15/
+          (cd source_zip && zip -r ../GarakeiMono15_Source.zip GarakeiMono15)
+          ls -lh GarakeiMono15_Source.zip GarakeiMono15_Dopamine_Rootless.deb build.log inspection_report.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GARAKEIMONO15-0.1.0-rootless
+          path: |
+            GarakeiMono15_Dopamine_Rootless.deb
+            GarakeiMono15_Source.zip
+            build.log
+            inspection_report.txt
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: garakeimono15-build-log-failure
+          path: |
+            build.log
+            inspection_report.txt
+          if-no-files-found: ignore
